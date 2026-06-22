@@ -16,6 +16,7 @@ pub fn create_router() -> Router {
         .route("/api/clear-error", post(handlers::clear_error))
         // Config
         .route("/api/config/generate", post(handlers::post_generate_config))
+        .route("/api/config/get", get(handlers::get_config_file))
         // Version / info
         .route("/api/version", get(handlers::get_version))
         .route("/api/paths", get(handlers::get_paths))

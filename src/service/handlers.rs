@@ -561,6 +561,30 @@ pub async fn engine_install() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
+#[derive(Deserialize)]
+pub struct ConfigPathQuery {
+    pub path: Option<String>,
+}
+
+pub async fn get_config_file(
+    Query(q): axum::extract::Query<ConfigPathQuery>,
+) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
+    let path = q.path.unwrap_or_default();
+    let config_dir = crate::core::config_dir();
+    let full_path = std::path::Path::new(&config_dir).join(path.trim_start_matches('/'));
+    if full_path.exists() {
+        std::fs::read_to_string(&full_path).map_err(|e| (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse { error: e.to_string() }),
+        ))
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse { error: "File not found".to_string() }),
+        ))
+    }
+}
+
 pub async fn set_theme() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
 }
@@ -579,11 +603,26 @@ pub async fn db_execute(
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponse { error: e.to_string() }),
     ))?;
-    conn.execute(&req.sql, []).map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse { error: e.to_string() }),
-    ))?;
-    Ok(Json(serde_json::json!({ "rowsAffected": 1 })))
+    let sql_upper = req.sql.trim().to_uppercase();
+    // SELECT queries need query_map, not execute
+    if sql_upper.starts_with("SELECT") || sql_upper.starts_with("PRAGMA") || sql_upper.starts_with("EXPLAIN") {
+        let mut stmt = conn.prepare(&req.sql).map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: e.to_string() }),
+        ))?;
+        let count = stmt.query_map([], |_| Ok(())).map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: e.to_string() }),
+        ))?.count();
+        Ok(Json(serde_json::json!({ "rowsAffected": count, "lastInsertId": 0 })))
+    } else {
+        let rows_affected = conn.execute(&req.sql, []).map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: e.to_string() }),
+        ))?;
+        let last_insert_id = conn.last_insert_rowid();
+        Ok(Json(serde_json::json!({ "rowsAffected": rows_affected, "lastInsertId": last_insert_id })))
+    }
 }
 
 pub async fn db_select(
@@ -598,12 +637,32 @@ pub async fn db_select(
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponse { error: e.to_string() }),
     ))?;
+
+    // Get column names
+    let col_count = stmt.column_count();
+    let col_names: Vec<String> = (0..col_count)
+        .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
+        .collect();
+
     let rows: Vec<serde_json::Value> = stmt.query_map([], |row| {
         let mut map = serde_json::Map::new();
-        for i in 0..8 {
-            let val: Option<String> = row.get(i).ok().flatten();
-            if let Some(v) = val {
-                map.insert(format!("col_{}", i), serde_json::Value::String(v));
+        for (i, name) in col_names.iter().enumerate() {
+            // Try different types
+            if let Ok(v) = row.get::<_, i64>(i) {
+                map.insert(name.clone(), serde_json::Value::Number(v.into()));
+            } else if let Ok(v) = row.get::<_, f64>(i) {
+                if let Some(n) = serde_json::Number::from_f64(v) {
+                    map.insert(name.clone(), serde_json::Value::Number(n));
+                }
+            } else if let Ok(v) = row.get::<_, String>(i) {
+                map.insert(name.clone(), serde_json::Value::String(v));
+            } else {
+                let v: Option<String> = row.get(i).ok().flatten();
+                if let Some(s) = v {
+                    map.insert(name.clone(), serde_json::Value::String(s));
+                } else {
+                    map.insert(name.clone(), serde_json::Value::Null);
+                }
             }
         }
         Ok(serde_json::Value::Object(map))
