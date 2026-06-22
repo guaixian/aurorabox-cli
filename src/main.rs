@@ -34,6 +34,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Start {
             mode,
             subscription,
+            proxy_ids,
             config_dir,
             web_server,
             port,
@@ -42,11 +43,17 @@ fn main() -> anyhow::Result<()> {
             rt.block_on(async {
                 let proxy_mode = proxy::ProxyMode::from(mode.clone());
 
+                // Activate specified proxies/groups before generating config
+                if !proxy_ids.is_empty() {
+                    set_active_proxies(&proxy_ids)?;
+                }
+
                 // Generate config
                 log::info!("Generating config for mode: {:?}", mode);
+                let tun = mode.is_tun();
                 let config_path = core::generate_and_write_config(
                     &mode.to_mode_str(),
-                    false, // tun flag
+                    tun,
                     subscription.as_deref(),
                     config_dir.as_deref(),
                 )?;
@@ -107,6 +114,10 @@ fn main() -> anyhow::Result<()> {
 
         Commands::Add { source } => {
             handle_add(source)?;
+        }
+
+        Commands::Import { links, file } => {
+            handle_import(&links, file.as_deref())?;
         }
 
         Commands::List { target } => {
@@ -211,8 +222,9 @@ fn handle_list(target: cli::ListTarget) -> anyhow::Result<()> {
                 for s in &servers {
                     let active = if s.is_active != 0 { " [ACTIVE]" } else { "" };
                     println!(
-                        "[{}] {} - {}://{}:{}{}",
-                        s.id, s.name, s.proxy_type, s.server_address, s.server_port, active
+                        "[{}] {} - {}://{}:{}{}  id={}",
+                        s.id, s.name, s.proxy_type, s.server_address, s.server_port, active,
+                        &s.identifier[..s.identifier.len().min(12)]
                     );
                 }
             }
@@ -230,6 +242,101 @@ fn handle_list(target: cli::ListTarget) -> anyhow::Result<()> {
                     );
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_import(links: &[String], file: Option<&str>) -> anyhow::Result<()> {
+    let text = if let Some(path) = file {
+        std::fs::read_to_string(path)?
+    } else if !links.is_empty() {
+        links.join("\n")
+    } else {
+        // Read from stdin
+        let mut input = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+        input
+    };
+
+    if text.trim().is_empty() {
+        anyhow::bail!("No share links provided. Use --file, pass links as arguments, or pipe from stdin.");
+    }
+
+    let parsed = utils::proxy_parser::parse_share_links(&text);
+    if parsed.is_empty() {
+        anyhow::bail!("No valid proxy links found in input.");
+    }
+
+    let db_path = db::db_path();
+    let conn = db::open(&db_path)?;
+    let now = chrono::Utc::now().timestamp();
+    let mut count = 0;
+
+    for p in &parsed {
+        let identifier = uuid::Uuid::new_v4().to_string();
+        let server = db::models::ProxyServer {
+            id: 0,
+            identifier: identifier.clone(),
+            name: p.name.clone(),
+            server_address: p.server.clone(),
+            server_port: p.port as i64,
+            password: p.password.clone(),
+            encryption_method: if p.method.is_empty() {
+                "aes-256-gcm".to_string()
+            } else {
+                p.method.clone()
+            },
+            plugin: p.plugin.clone(),
+            plugin_opts: p.plugin_opts.clone(),
+            is_active: 0,
+            created_at: now,
+            updated_at: now,
+            proxy_type: p.proxy_type.clone(),
+            username: p.username.clone(),
+            vless_uuid: p.vless_uuid.clone(),
+            vless_opts: p.vless_opts.clone(),
+        };
+
+        match db::queries::insert_proxy_server(&conn, &server) {
+            Ok(_) => {
+                log::info!(
+                    "Imported: [{}] {} - {}://{}:{}",
+                    p.proxy_type,
+                    p.name,
+                    p.proxy_type,
+                    p.server,
+                    p.port
+                );
+                count += 1;
+            }
+            Err(e) => {
+                log::warn!("Failed to import {}: {}", p.name, e);
+            }
+        }
+    }
+
+    log::info!("Successfully imported {} proxy servers", count);
+    println!("Imported {} proxy servers", count);
+
+    Ok(())
+}
+
+fn set_active_proxies(ids: &[String]) -> anyhow::Result<()> {
+    let db_path = db::db_path();
+    let conn = db::open(&db_path)?;
+
+    for id in ids {
+        // Try as a proxy server first
+        if let Ok(Some(_server)) = db::queries::get_proxy_server_by_identifier(&conn, id) {
+            db::queries::set_active_proxy_server(&conn, id)?;
+            log::info!("Activated proxy server: {}", id);
+        } else if let Ok(Some(_group)) = db::queries::get_proxy_group_by_identifier(&conn, id) {
+            db::queries::set_active_proxy_group(&conn, id)?;
+            log::info!("Activated proxy group: {}", id);
+        } else {
+            log::warn!("No proxy server or group found with identifier: {}", id);
         }
     }
 

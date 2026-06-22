@@ -231,6 +231,43 @@ pub fn set_active_proxy_server(conn: &Connection, identifier: &str) -> anyhow::R
     Ok(())
 }
 
+pub fn get_proxy_server_by_identifier(
+    conn: &Connection,
+    identifier: &str,
+) -> anyhow::Result<Option<ProxyServer>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, identifier, name, server_address, server_port,
+                password, encryption_method, plugin, plugin_opts,
+                is_active, created_at, updated_at, proxy_type,
+                username, vless_uuid, vless_opts
+         FROM proxy_servers WHERE identifier = ?1"
+    )?;
+    let mut rows = stmt.query_map(params![identifier], |row| {
+        Ok(ProxyServer {
+            id: row.get(0)?,
+            identifier: row.get(1)?,
+            name: row.get(2)?,
+            server_address: row.get(3)?,
+            server_port: row.get(4)?,
+            password: row.get(5)?,
+            encryption_method: row.get(6)?,
+            plugin: row.get(7)?,
+            plugin_opts: row.get(8)?,
+            is_active: row.get(9)?,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
+            proxy_type: row.get(12)?,
+            username: row.get(13)?,
+            vless_uuid: row.get(14)?,
+            vless_opts: row.get(15)?,
+        })
+    })?;
+    match rows.next() {
+        Some(row) => Ok(Some(row?)),
+        None => Ok(None),
+    }
+}
+
 pub fn get_active_proxy_server(conn: &Connection) -> anyhow::Result<Option<ProxyServer>> {
     let mut stmt = conn.prepare(
         "SELECT id, identifier, name, server_address, server_port,
@@ -303,6 +340,31 @@ pub fn insert_proxy_group(
         params![identifier, name, group_type],
     )?;
     Ok(identifier)
+}
+
+pub fn get_proxy_group_by_identifier(
+    conn: &Connection,
+    identifier: &str,
+) -> anyhow::Result<Option<ProxyGroup>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, identifier, name, group_type, is_active, created_at, updated_at
+         FROM proxy_groups WHERE identifier = ?1"
+    )?;
+    let mut rows = stmt.query_map(params![identifier], |row| {
+        Ok(ProxyGroup {
+            id: row.get(0)?,
+            identifier: row.get(1)?,
+            name: row.get(2)?,
+            group_type: row.get(3)?,
+            is_active: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    })?;
+    match rows.next() {
+        Some(row) => Ok(Some(row?)),
+        None => Ok(None),
+    }
 }
 
 pub fn delete_proxy_group(conn: &Connection, id: i64) -> anyhow::Result<()> {

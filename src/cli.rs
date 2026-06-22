@@ -42,6 +42,13 @@ pub enum Commands {
         #[arg(long)]
         subscription: Option<String>,
 
+        /// Proxy server or group identifier to activate before starting.
+        /// Can be specified multiple times. If a group is active, its
+        /// members are used. If a server is active, it becomes the
+        /// default outbound.
+        #[arg(long = "proxy", short = 'p')]
+        proxy_ids: Vec<String>,
+
         /// Config directory (default: ~/.config/aurorabox)
         #[arg(long)]
         config_dir: Option<String>,
@@ -68,6 +75,21 @@ pub enum Commands {
     Add {
         #[command(subcommand)]
         source: AddSource,
+    },
+
+    /// Import proxy servers from share links
+    ///
+    /// Accepts ss://, socks5://, http://, vless://, trojan://, hysteria2:// links.
+    /// Supports bulk import from stdin, file, or direct link argument.
+    Import {
+        /// Share link(s) to import. If omitted, reads from stdin.
+        /// Can be a single link or multi-line text with multiple links.
+        #[arg()]
+        links: Vec<String>,
+
+        /// Read links from a file
+        #[arg(short, long)]
+        file: Option<String>,
     },
 
     /// List subscriptions, proxies, or groups
