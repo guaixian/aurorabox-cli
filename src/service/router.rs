@@ -33,8 +33,8 @@ pub fn create_router() -> Router {
         // Health check
         .route("/api/health", get(handlers::health_check));
 
-    // Mount API routes and serve static files as fallback
+    // Merge API routes and serve static files as fallback
     Router::new()
-        .nest("/", api)
+        .merge(api)
         .fallback_service(get(super::static_files::serve_static))
 }
