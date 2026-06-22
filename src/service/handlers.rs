@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 pub struct StartRequest {
     pub mode: Option<String>,
     pub subscription: Option<String>,
+    pub path: Option<String>,
+    #[serde(rename = "_app")]
+    pub _app: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -49,9 +52,11 @@ pub struct DeleteById {
 
 #[derive(Serialize)]
 pub struct StatusResponse {
+    #[serde(rename = "type")]
     pub state: String,
     pub mode: Option<String>,
     pub pid: Option<u32>,
+    pub epoch: u64,
 }
 
 #[derive(Serialize)]
@@ -73,46 +78,64 @@ pub async fn health_check() -> Json<serde_json::Value> {
 
 pub async fn get_status() -> Json<StatusResponse> {
     let state = crate::proxy::manager::snapshot();
-    let mode = match &state {
-        crate::proxy::manager::EngineState::Running { mode, .. } => Some(mode.clone()),
-        crate::proxy::manager::EngineState::Starting { mode, .. } => Some(mode.clone()),
-        _ => None,
+    let (mode, epoch) = match &state {
+        crate::proxy::manager::EngineState::Running { mode, epoch, .. } => (Some(mode.clone()), *epoch),
+        crate::proxy::manager::EngineState::Starting { mode, epoch, .. } => (Some(mode.clone()), *epoch),
+        crate::proxy::manager::EngineState::Idle { epoch } => (None, *epoch),
+        crate::proxy::manager::EngineState::Stopping { epoch, .. } => (None, *epoch),
+        crate::proxy::manager::EngineState::Failed { epoch, .. } => (None, *epoch),
     };
     let pid = crate::proxy::process::get_pid();
 
     let state_str = match state {
-        crate::proxy::manager::EngineState::Idle { .. } => "idle",
-        crate::proxy::manager::EngineState::Starting { .. } => "starting",
-        crate::proxy::manager::EngineState::Running { .. } => "running",
-        crate::proxy::manager::EngineState::Stopping { .. } => "stopping",
-        crate::proxy::manager::EngineState::Failed { .. } => "failed",
+        crate::proxy::manager::EngineState::Idle { .. } => "Idle",
+        crate::proxy::manager::EngineState::Starting { .. } => "Starting",
+        crate::proxy::manager::EngineState::Running { .. } => "Running",
+        crate::proxy::manager::EngineState::Stopping { .. } => "Stopping",
+        crate::proxy::manager::EngineState::Failed { .. } => "Failed",
     };
 
     Json(StatusResponse {
         state: state_str.to_string(),
         mode,
         pid,
+        epoch,
     })
 }
 
 pub async fn post_start(
     Json(req): Json<StartRequest>,
 ) -> Result<Json<StatusResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let mode = req.mode.unwrap_or_else(|| "rule".to_string());
-    let tun = mode == "tun" || mode == "nic";
+    // Convert mode: "TunProxy"|"SystemProxy"|"ManualProxy" → "tun"|"system"|"manual"
+    let raw_mode = req.mode.unwrap_or_else(|| "SystemProxy".to_string());
+    let mode = raw_mode
+        .replace("Proxy", "")
+        .to_lowercase(); // "TunProxy" → "tun", "SystemProxy" → "system"
+    let tun = mode == "tun";
 
-    // Generate config
-    let config_path = crate::core::generate_and_write_config(&mode, tun, req.subscription.as_deref(), None)
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: e.to_string() }),
-            )
-        })?;
+    // If the app already generated config at a path, use it
+    let config_path = if let Some(ref p) = req.path {
+        if std::path::Path::new(p).exists() {
+            p.clone()
+        } else {
+            // Generate config
+            crate::core::generate_and_write_config(&mode, tun, req.subscription.as_deref(), None)
+                .map_err(|e| {
+                    (StatusCode::INTERNAL_SERVER_ERROR,
+                     Json(ErrorResponse { error: e.to_string() }))
+                })?
+        }
+    } else {
+        crate::core::generate_and_write_config(&mode, tun, req.subscription.as_deref(), None)
+            .map_err(|e| {
+                (StatusCode::INTERNAL_SERVER_ERROR,
+                 Json(ErrorResponse { error: e.to_string() }))
+            })?
+    };
 
     // Start sing-box
     let proxy_mode = match mode.as_str() {
-        "tun" | "nic" => crate::proxy::ProxyMode::Tun,
+        "tun" => crate::proxy::ProxyMode::Tun,
         _ => crate::proxy::ProxyMode::System,
     };
 
@@ -390,14 +413,17 @@ pub async fn delete_group(
 // Logs and traffic
 // ============================================================
 
-pub async fn get_logs() -> Json<serde_json::Value> {
-    // Basic implementation: return engine state as log info
+pub async fn get_logs(
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
+    // App expects plain string; isError flag selects stdout vs stderr
+    let _is_error = params.get("isError").map(|v| v == "true" || v == "1").unwrap_or(false);
     let state = crate::proxy::manager::snapshot();
     let running = crate::proxy::process::is_running();
-    Json(serde_json::json!({
-        "engine_state": state,
-        "singbox_running": running,
-    }))
+    let log_line = format!("[{}] engine={:?} running={}\n",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        state, running);
+    Ok(log_line)
 }
 
 pub async fn get_traffic() -> Json<serde_json::Value> {

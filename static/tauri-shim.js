@@ -55,10 +55,44 @@
   if (!defaultSettings.has('skip_system_proxy_key')) defaultSettings.set('skip_system_proxy_key', false);
 
   // ============================================================
+  // Debug logging
+  // ============================================================
+  const debugLog = [];
+  const MAX_LOG = 200;
+  function addLog(entry) {
+    debugLog.push(entry);
+    if (debugLog.length > MAX_LOG) debugLog.shift();
+    updateDebugPanel();
+  }
+  function updateDebugPanel() {
+    var panel = document.getElementById('__aurora_debug');
+    if (!panel) return;
+    var recent = debugLog.slice(-50);
+    panel.innerHTML = '<div style="position:fixed;bottom:0;left:0;right:0;max-height:300px;overflow-y:auto;background:#0a0a0a;border-top:2px solid #333;font-family:monospace;font-size:11px;z-index:99999;padding:8px;color:#aaa;">' +
+      '<div style="color:#6c5ce7;margin-bottom:4px;display:flex;justify-content:space-between;"><b>🔍 Tauri→REST Debug</b> <span>' + debugLog.length + ' calls</span></div>' +
+      recent.map(function(e) { return '<div style="border-bottom:1px solid #1a1a1a;padding:2px 0;"><span style="color:' + (e.err ? '#f44' : '#4a4') + ';">' + (e.err ? '✗' : '✓') + '</span> <span style="color:#888;">' + e.ts + '</span> <span style="color:#6c5ce7;">' + e.cmd + '</span>' + (e.err ? ' <span style="color:#f44;">' + e.err + '</span>' : ' <span style="color:#4a4;">OK</span>') + '</div>'; }).join('') +
+      '</div>';
+  }
+  function createDebugPanel() {
+    if (document.getElementById('__aurora_debug')) return;
+    var div = document.createElement('div');
+    div.id = '__aurora_debug';
+    document.body.appendChild(div);
+    updateDebugPanel();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', createDebugPanel);
+  } else {
+    createDebugPanel();
+  }
+
+  // ============================================================
   // Core invoke handler
   // ============================================================
   async function shimInvoke(cmd, args, options) {
     args = args || {};
+    var startTs = Date.now();
+    var ts = new Date().toISOString().slice(11,23);
 
     // ---- Plugin: event ----
     if (cmd === 'plugin:event|listen') {
@@ -290,10 +324,17 @@
     if (cmd.startsWith('plugin:image|')) return cmd.includes('size') ? { width: 16, height: 16 } : (cmd.includes('new') ? { rid: 1 } : null);
 
     // ---- Plugin: resources ----
-    if (cmd === 'plugin:resources|close') return;
+    if (cmd === 'plugin:resources|close') { addLog({cmd:cmd,ts:ts,err:null}); return; }
 
     // ---- App-specific commands → REST API ----
-    return await handleAppCommand(cmd, args);
+    try {
+      var result = await handleAppCommand(cmd, args);
+      addLog({cmd:cmd,ts:ts,err:null});
+      return result;
+    } catch(e) {
+      addLog({cmd:cmd,ts:ts,err:e.message});
+      throw e;
+    }
   }
 
   // ============================================================
@@ -301,15 +342,18 @@
   // ============================================================
   async function handleAppCommand(cmd, args) {
     const map = {
-      'start':                    { method: 'POST', path: '/api/start', body: { mode: args.mode, subscription: args.subscription || args.path } },
+      // start: app sends {app, path, mode} where mode is TunProxy|SystemProxy|ManualProxy
+      'start':                    { method: 'POST', path: '/api/start',
+                                    body: { mode: (args.mode||'').replace('Proxy','').toLowerCase(),
+                                            path: args.path, _app: !!args.app } },
       'stop':                     { method: 'POST', path: '/api/stop' },
       'reload_config':            { method: 'POST', path: '/api/reload' },
-      'is_running':               { method: 'GET',  path: '/api/status', map: d => d.state === 'running' },
-      'get_engine_state':         { method: 'GET',  path: '/api/status' },
+      'is_running':               { method: 'GET',  path: '/api/status', map: d => d.state === 'running' || d.type === 'Running' },
+      'get_engine_state':         { method: 'GET',  path: '/api/status', map: d => ({ type: d.state||d.type||'Idle', epoch: d.epoch||0, mode: d.mode||null }) },
       'clear_engine_error':       { method: 'POST', path: '/api/clear-error' },
       'version':                  { method: 'GET',  path: '/api/version', map: d => d.version || 'unknown' },
       'get_app_version':          { method: 'GET',  path: '/api/version', map: d => d.cli_version || '0.1.0' },
-      'read_logs':                { method: 'GET',  path: '/api/logs', map: d => typeof d === 'string' ? d : JSON.stringify(d) },
+      'read_logs':                { method: 'GET',  path: '/api/logs', map: d => typeof d === 'string' ? d : (d.body||'') },
       'get_app_paths':            { method: 'GET',  path: '/api/paths' },
       'get_lan_ip':               { method: 'GET',  path: '/api/network/lan-ip', map: d => d.ip || '127.0.0.1' },
       'ping_google':              { method: 'GET',  path: '/api/network/ping', map: d => d.ok || false },
@@ -317,8 +361,8 @@
       'get_captive_redirect_url': { method: 'GET',  path: '/api/network/captive-url', map: d => d.url || '' },
       'open_browser':             { method: 'POST', path: '/api/network/open-url', body: { url: args.url } },
       'run_singbox_tests':        { method: 'POST', path: '/api/proxies/test', body: { outbounds: args.outbounds }, map: d => d.results || d },
-      'get_traffic':              { method: 'GET',  path: '/api/traffic', map: d => ({ up: d.up || 0, down: d.down || 0 }) },
-      'prestart_check':           { method: 'GET',  path: '/api/proxy/port-check', map: d => ({ port_occupied: !d.available, orphan_pids: d.pids || [] }) },
+      'get_traffic':              { method: 'GET',  path: '/api/traffic', map: d => ({ up: d.up||0, down: d.down||0 }) },
+      'prestart_check':           { method: 'GET',  path: '/api/proxy/port-check', map: d => ({ port_occupied: !d.available, orphan_pids: d.pids||[] }) },
       'kill_orphans':             { method: 'POST', path: '/api/proxy/kill-orphans', map: d => ({ success: true, port_released: true }) },
       'get_optimal_local_dns_server': { method: 'GET', path: '/api/dns/optimal', map: d => d.server || '119.29.29.29' },
       'start_chain':              { method: 'POST', path: '/api/chain/start', map: d => d.port || 0 },
