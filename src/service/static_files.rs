@@ -5,8 +5,7 @@ use axum::{
 };
 
 /// Embedded frontend assets (using rust-embed)
-/// The static/ directory is populated at build time.
-/// If no frontend is available, a simple placeholder UI is served.
+/// Contains the AuroraBox React frontend dist files plus tauri-shim.js
 #[derive(rust_embed::RustEmbed)]
 #[folder = "static/"]
 struct FrontendAssets;
@@ -24,26 +23,68 @@ pub async fn serve_static(
     match FrontendAssets::get(path) {
         Some(content) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
+            let body = if path == "index.html" || path.ends_with("index.html") {
+                // Inject tauri-shim.js before the first <script> tag
+                inject_shim_script(&content.data)
+            } else {
+                content.data.to_vec()
+            };
+
             Response::builder()
                 .header(header::CONTENT_TYPE, mime.as_ref())
                 .status(StatusCode::OK)
-                .body(Body::from(content.data.to_vec()))
+                .body(Body::from(body))
                 .unwrap()
         }
         None => {
             // SPA fallback: serve index.html for any non-file routes
             if let Some(index) = FrontendAssets::get("index.html") {
+                let body = inject_shim_script(&index.data);
                 Response::builder()
                     .header(header::CONTENT_TYPE, "text/html")
                     .status(StatusCode::OK)
-                    .body(Body::from(index.data.to_vec()))
+                    .body(Body::from(body))
                     .unwrap()
             } else {
-                // No frontend at all - serve a simple placeholder
                 serve_placeholder()
             }
         }
     }
+}
+
+/// Inject the tauri-shim.js script tag into the HTML before any other scripts.
+/// This ensures the Tauri compatibility layer loads before the React app.
+fn inject_shim_script(html_bytes: &[u8]) -> Vec<u8> {
+    let html = String::from_utf8_lossy(html_bytes);
+
+    // We need to inject: <script src="/tauri-shim.js"></script>
+    // The shim must load BEFORE any module scripts (like the Vite bundle).
+    // We inject it right after <head> or before the first <script> tag.
+
+    let shim_tag = r#"<script src="/tauri-shim.js"></script>"#;
+
+    // Strategy: inject right before the first <script> tag in <head>
+    if let Some(script_pos) = html.find("<script") {
+        let mut result = String::with_capacity(html.len() + shim_tag.len() + 20);
+        result.push_str(&html[..script_pos]);
+        // Add a blocking script tag (no defer/async) so it loads first
+        result.push_str(&format!("\n    {}\n    ", shim_tag));
+        result.push_str(&html[script_pos..]);
+        return result.into_bytes();
+    }
+
+    // Fallback: inject after <head>
+    if let Some(head_pos) = html.find("<head>") {
+        let insert_pos = head_pos + 6;
+        let mut result = String::with_capacity(html.len() + shim_tag.len() + 20);
+        result.push_str(&html[..insert_pos]);
+        result.push_str(&format!("\n    {}\n", shim_tag));
+        result.push_str(&html[insert_pos..]);
+        return result.into_bytes();
+    }
+
+    // Last resort: prepend to body
+    html_bytes.to_vec()
 }
 
 /// Serve a simple placeholder HTML when no frontend is embedded
@@ -62,73 +103,30 @@ fn serve_placeholder() -> Response<Body> {
             display: flex; justify-content: center; align-items: center;
             min-height: 100vh; padding: 20px;
         }
-        .container { max-width: 600px; width: 100%; }
+        .container { max-width: 600px; width: 100%; text-align: center; }
         h1 { font-size: 2rem; margin-bottom: 0.5rem; color: #6c5ce7; }
-        .subtitle { color: #888; margin-bottom: 2rem; }
-        .card {
-            background: #1a1a1a; border: 1px solid #2a2a2a;
-            border-radius: 12px; padding: 24px; margin-bottom: 16px;
+        p { color: #888; margin-bottom: 1rem; }
+        .warning {
+            background: #2a1a00; border: 1px solid #554400; color: #ffa500;
+            padding: 12px 20px; border-radius: 8px; margin-top: 2rem;
         }
-        .card h2 { font-size: 1.1rem; margin-bottom: 12px; color: #aaa; }
-        .status { display: flex; align-items: center; gap: 8px; }
-        .dot { width: 10px; height: 10px; border-radius: 50%; background: #555; }
-        .dot.running { background: #00d68f; }
-        .endpoints { display: grid; gap: 8px; }
-        .endpoint {
-            display: flex; justify-content: space-between;
-            padding: 8px 12px; background: #141414; border-radius: 8px;
-            font-family: monospace; font-size: 0.85rem;
-        }
-        .method { color: #6c5ce7; }
-        .path { color: #ccc; }
+        code { background: #1a1a1a; padding: 2px 8px; border-radius: 4px; color: #6c5ce7; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>⚡ AuroraBox CLI</h1>
-        <p class="subtitle">sing-box proxy manager — API is running</p>
-
-        <div class="card">
-            <h2>Engine Status</h2>
-            <div class="status">
-                <div class="dot" id="status-dot"></div>
-                <span id="status-text">Loading...</span>
-            </div>
+        <p>API server is running. To enable the full web UI:</p>
+        <div class="warning">
+            <strong>Frontend not built.</strong><br>
+            Build the AuroraBox frontend and copy <code>dist/</code> to <code>static/</code>,<br>
+            or run <code>cargo build</code> with the frontend available.
         </div>
-
-        <div class="card">
-            <h2>REST API Endpoints</h2>
-            <div class="endpoints">
-                <div class="endpoint"><span class="method">GET</span><span class="path">/api/status</span></div>
-                <div class="endpoint"><span class="method">POST</span><span class="path">/api/start</span></div>
-                <div class="endpoint"><span class="method">POST</span><span class="path">/api/stop</span></div>
-                <div class="endpoint"><span class="method">POST</span><span class="path">/api/reload</span></div>
-                <div class="endpoint"><span class="method">GET</span><span class="path">/api/subscriptions</span></div>
-                <div class="endpoint"><span class="method">POST</span><span class="path">/api/subscriptions</span></div>
-                <div class="endpoint"><span class="method">GET</span><span class="path">/api/proxies</span></div>
-                <div class="endpoint"><span class="method">POST</span><span class="path">/api/proxies</span></div>
-                <div class="endpoint"><span class="method">GET</span><span class="path">/api/groups</span></div>
-                <div class="endpoint"><span class="method">POST</span><span class="path">/api/groups</span></div>
-            </div>
-        </div>
+        <p style="margin-top: 2rem;">
+            <a href="/api/health" style="color: #6c5ce7;">API Health</a> ·
+            <a href="/api/status" style="color: #6c5ce7;">Engine Status</a>
+        </p>
     </div>
-    <script>
-        async function checkStatus() {
-            try {
-                const r = await fetch("/api/status");
-                const data = await r.json();
-                document.getElementById("status-text").textContent =
-                    "State: " + data.state + (data.mode ? " (" + data.mode + ")" : "");
-                const dot = document.getElementById("status-dot");
-                if (data.state === "running") dot.classList.add("running");
-                else dot.classList.remove("running");
-            } catch(e) {
-                document.getElementById("status-text").textContent = "API error";
-            }
-        }
-        checkStatus();
-        setInterval(checkStatus, 5000);
-    </script>
 </body>
 </html>"#;
 

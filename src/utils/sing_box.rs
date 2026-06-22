@@ -132,6 +132,20 @@ fn detect_platform() -> &'static str {
     }
 }
 
+/// Get the sing-box version string
+pub fn get_singbox_version() -> anyhow::Result<String> {
+    let path = sing_box_path();
+    let output = std::process::Command::new(&path)
+        .arg("version")
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run sing-box version: {}", e))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Ok("sing-box (version unknown)".to_string())
+    }
+}
+
 fn detect_arch() -> &'static str {
     if cfg!(target_arch = "x86_64") {
         "amd64"
