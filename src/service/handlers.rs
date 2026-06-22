@@ -413,17 +413,12 @@ pub async fn delete_group(
 // Logs and traffic
 // ============================================================
 
-pub async fn get_logs(
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
-    // App expects plain string; isError flag selects stdout vs stderr
-    let _is_error = params.get("isError").map(|v| v == "true" || v == "1").unwrap_or(false);
+pub async fn get_logs() -> String {
     let state = crate::proxy::manager::snapshot();
     let running = crate::proxy::process::is_running();
-    let log_line = format!("[{}] engine={:?} running={}\n",
+    format!("[{}] engine={:?} running={}\n",
         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
-        state, running);
-    Ok(log_line)
+        state, running)
 }
 
 pub async fn get_traffic() -> Json<serde_json::Value> {

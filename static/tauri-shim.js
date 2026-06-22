@@ -353,7 +353,7 @@
       'clear_engine_error':       { method: 'POST', path: '/api/clear-error' },
       'version':                  { method: 'GET',  path: '/api/version', map: d => d.version || 'unknown' },
       'get_app_version':          { method: 'GET',  path: '/api/version', map: d => d.cli_version || '0.1.0' },
-      'read_logs':                { method: 'GET',  path: '/api/logs', map: d => typeof d === 'string' ? d : (d.body||'') },
+      'read_logs':                { method: 'GET',  path: '/api/logs', map: d => typeof d === 'string' ? d : JSON.stringify(d) },
       'get_app_paths':            { method: 'GET',  path: '/api/paths' },
       'get_lan_ip':               { method: 'GET',  path: '/api/network/lan-ip', map: d => d.ip || '127.0.0.1' },
       'ping_google':              { method: 'GET',  path: '/api/network/ping', map: d => d.ok || false },
