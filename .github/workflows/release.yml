@@ -1,0 +1,204 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag override (leave blank for auto)'
+        required: false
+        default: ''
+
+jobs:
+  # ── Linux ────────────────────────────────────────────────────────
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            artifact: aurorabox-linux-amd64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            artifact: aurorabox-linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation deps (arm64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          ls -lh target/${{ matrix.target }}/release/aurorabox
+
+      - name: Package (tar.gz)
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ${{ matrix.artifact }}.tar.gz aurorabox
+          sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/${{ matrix.target }}/release/${{ matrix.artifact }}.tar.gz
+            target/${{ matrix.target }}/release/${{ matrix.artifact }}.tar.gz.sha256
+
+  # ── macOS ────────────────────────────────────────────────────────
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            artifact: aurorabox-macos-amd64
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            artifact: aurorabox-macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          ls -lh target/${{ matrix.target }}/release/aurorabox
+
+      - name: Package (tar.gz)
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ${{ matrix.artifact }}.tar.gz aurorabox
+          sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/${{ matrix.target }}/release/${{ matrix.artifact }}.tar.gz
+            target/${{ matrix.target }}/release/${{ matrix.artifact }}.tar.gz.sha256
+
+  # ── Windows ──────────────────────────────────────────────────────
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            artifact: aurorabox-windows-amd64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          dir target\${{ matrix.target }}\release\aurorabox.exe
+
+      - name: Package (zip)
+        run: |
+          cd target\${{ matrix.target }}\release
+          Compress-Archive -Path aurorabox.exe -DestinationPath ${{ matrix.artifact }}.zip
+          Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  ${{ matrix.artifact }}.zip" } > ${{ matrix.artifact }}.zip.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/${{ matrix.target }}/release/${{ matrix.artifact }}.zip
+            target/${{ matrix.target }}/release/${{ matrix.artifact }}.zip.sha256
+
+  # ── Create GitHub Release ────────────────────────────────────────
+  release:
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f -ls
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "AuroraBox CLI v${{ github.ref_name }}"
+          body: |
+            ## AuroraBox CLI ${{ github.ref_name }}
+
+            A command-line sing-box proxy manager with optional web UI.
+
+            ### Downloads
+
+            | Platform | Architecture | Download |
+            |----------|-------------|----------|
+            | Linux | x86_64 | `aurorabox-linux-amd64.tar.gz` |
+            | Linux | ARM64 | `aurorabox-linux-arm64.tar.gz` |
+            | macOS | x86_64 | `aurorabox-macos-amd64.tar.gz` |
+            | macOS | ARM64 (Apple Silicon) | `aurorabox-macos-arm64.tar.gz` |
+            | Windows | x86_64 | `aurorabox-windows-amd64.zip` |
+
+            ### Install
+
+            ```bash
+            # Linux/macOS
+            tar xzf aurorabox-<platform>-<arch>.tar.gz
+            sudo mv aurorabox /usr/local/bin/
+            aurorabox --help
+
+            # Windows
+            # Extract aurorabox.exe and add to PATH
+            ```
+
+            Requires [sing-box](https://github.com/SagerNet/sing-box) to be installed separately.
+            Run `aurorabox install` to auto-download sing-box.
+
+            ### Quick Start
+            ```bash
+            aurorabox import "socks5://127.0.0.1:1080#My Proxy"
+            aurorabox start --mode rule
+            aurorabox web --port 8080
+            ```
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.tar.gz.sha256
+            artifacts/**/*.zip
+            artifacts/**/*.zip.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
