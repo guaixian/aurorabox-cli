@@ -27,7 +27,7 @@ pub fn extract_rule_sets() -> HashMap<String, String> {
     let embedded = get_embedded_rule_sets();
 
     for (tag, data) in embedded {
-        if data.len() < 500 {
+        if data.len() < 50 {
             continue;
         }
 

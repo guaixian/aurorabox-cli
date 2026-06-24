@@ -56,7 +56,7 @@ fn main() {
                     let name = path.file_name().unwrap().to_string_lossy().to_string();
                     let tag = name.trim_end_matches(".srs").to_string();
                     let data = std::fs::read(&path).unwrap_or_default();
-                    if data.len() > 500 {
+                    if data.len() > 50 {
                         // Copy to OUT_DIR for include_bytes!
                         let dest = PathBuf::from(&out_dir).join(&name);
                         std::fs::write(&dest, &data).ok();
