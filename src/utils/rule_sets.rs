@@ -45,8 +45,8 @@ pub fn extract_rule_sets() -> HashMap<String, String> {
             );
         }
 
-        let local_url = format!("file://{}", dest.display());
-        paths.insert(tag.to_string(), local_url);
+        let local_path = dest.display().to_string();
+        paths.insert(tag.to_string(), local_path);
     }
 
     paths
