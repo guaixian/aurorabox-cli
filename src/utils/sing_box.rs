@@ -1,12 +1,30 @@
 use std::path::PathBuf;
 
+/// Embedded sing-box binary (populated by build.rs).
+/// Empty slice means sing-box was not downloaded during build.
+static EMBEDDED_SING_BOX: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/sing-box"));
+
 /// Resolve the sing-box binary path.
-/// Checks in order:
-/// 1. SING_BOX_PATH environment variable
-/// 2. "sing-box" in PATH
-/// 3. ~/.local/share/aurorabox/bin/sing-box
-/// 4. Relative to executable directory
+///
+/// 1. If embedded binary exists, extract to cache dir and use that
+/// 2. Check SING_BOX_PATH environment variable
+/// 3. Check "sing-box" in PATH
 pub fn sing_box_path() -> String {
+    // Use embedded binary if available
+    if EMBEDDED_SING_BOX.len() > 1024 {
+        let cached = cached_singbox_path();
+        if !cached.exists() {
+            if let Err(e) = extract_embedded(&cached) {
+                log::warn!("Failed to extract embedded sing-box: {}", e);
+            }
+        }
+        if cached.exists() {
+            log::debug!("Using embedded sing-box: {}", cached.display());
+            return cached.to_string_lossy().to_string();
+        }
+    }
+
     // Check environment variable
     if let Ok(path) = std::env::var("SING_BOX_PATH") {
         if std::path::Path::new(&path).exists() {
@@ -15,26 +33,19 @@ pub fn sing_box_path() -> String {
         }
     }
 
-    // Check if "sing-box" is in PATH
+    // Check PATH
     if which_exists("sing-box") {
         log::debug!("Using sing-box from PATH");
         return "sing-box".to_string();
     }
 
-    // Check managed directory
-    let managed = managed_singbox_path();
-    if managed.exists() {
-        log::debug!("Using sing-box from managed path: {:?}", managed);
-        return managed.to_string_lossy().to_string();
-    }
-
-    // Fall back to "sing-box" (let the system figure it out or fail with a clear error)
-    log::warn!("sing-box not found in known locations, using 'sing-box' as fallback");
+    // Last resort
+    log::error!("sing-box not found. The embedded binary may have failed to extract.");
     "sing-box".to_string()
 }
 
-/// Get the managed sing-box binary path
-fn managed_singbox_path() -> PathBuf {
+/// Path where the embedded sing-box binary is cached
+fn cached_singbox_path() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".to_string());
@@ -52,6 +63,31 @@ fn managed_singbox_path() -> PathBuf {
     path
 }
 
+/// Extract the embedded sing-box binary to the cache directory
+fn extract_embedded(dest: &std::path::Path) -> anyhow::Result<()> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    log::info!(
+        "Extracting embedded sing-box ({:.1} MB)...",
+        EMBEDDED_SING_BOX.len() as f64 / 1_048_576.0
+    );
+
+    std::fs::write(dest, EMBEDDED_SING_BOX)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(dest)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(dest, perms)?;
+    }
+
+    log::info!("sing-box extracted to: {}", dest.display());
+    Ok(())
+}
+
 /// Check if a command exists in PATH
 fn which_exists(cmd: &str) -> bool {
     std::env::var("PATH")
@@ -60,76 +96,6 @@ fn which_exists(cmd: &str) -> bool {
                 .any(|dir| std::path::Path::new(dir).join(cmd).exists())
         })
         .unwrap_or(false)
-}
-
-/// Download sing-box binary from GitHub releases
-pub fn download_singbox(version: &str, target_dir: &str) -> anyhow::Result<()> {
-    std::fs::create_dir_all(target_dir)?;
-
-    let platform = detect_platform();
-    let arch = detect_arch();
-
-    let filename = format!("sing-box-{}-{}-{}.tar.gz", version, platform, arch);
-    let url = format!(
-        "https://github.com/SagerNet/sing-box/releases/download/v{}/{}",
-        version, filename
-    );
-
-    log::info!("Downloading sing-box from: {}", url);
-
-    let rt = tokio::runtime::Runtime::new()?;
-    let response = rt.block_on(async {
-        reqwest::get(&url).await?.bytes().await
-    })?;
-
-    // Extract tar.gz
-    log::info!("Extracting sing-box...");
-    let tar_gz = flate2::read::GzDecoder::new(&response[..]);
-    let mut archive = tar::Archive::new(tar_gz);
-
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?;
-        if let Some(name) = path.file_name() {
-            if name == "sing-box" || name == "sing-box.exe" {
-                let dest = std::path::Path::new(target_dir).join(name);
-                entry.unpack(&dest)?;
-                set_executable(&dest)?;
-                log::info!("sing-box installed to: {:?}", dest);
-                return Ok(());
-            }
-        }
-    }
-
-    Err(anyhow::anyhow!(
-        "Could not find sing-box binary in downloaded archive"
-    ))
-}
-
-#[cfg(unix)]
-fn set_executable(path: &std::path::Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms)?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &std::path::Path) -> anyhow::Result<()> {
-    Ok(())
-}
-
-fn detect_platform() -> &'static str {
-    if cfg!(target_os = "linux") {
-        "linux"
-    } else if cfg!(target_os = "macos") {
-        "darwin"
-    } else if cfg!(target_os = "windows") {
-        "windows"
-    } else {
-        "linux"
-    }
 }
 
 /// Get the sing-box version string
@@ -146,12 +112,12 @@ pub fn get_singbox_version() -> anyhow::Result<String> {
     }
 }
 
-fn detect_arch() -> &'static str {
-    if cfg!(target_arch = "x86_64") {
-        "amd64"
-    } else if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        "amd64"
+/// No-op: sing-box is now bundled. Kept for backward compat.
+pub fn download_singbox(_version: &str, _target_dir: &str) -> anyhow::Result<()> {
+    log::info!("sing-box is bundled into the binary — no download needed");
+    let cached = cached_singbox_path();
+    if !cached.exists() && EMBEDDED_SING_BOX.len() > 1024 {
+        extract_embedded(&cached)?;
     }
+    Ok(())
 }
