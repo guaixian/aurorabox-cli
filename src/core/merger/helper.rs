@@ -1,96 +1,61 @@
 use serde_json::Value;
 
-/// Patch rule_set entries: convert remote CDN downloads to local file:// URLs
-/// for rule-sets we have bundled, and remove references to rule-sets we don't have.
+/// Port of the desktop version's patchRuleSetCDN.
+///
+/// Strategy:
+/// 1. Empty the route.rule_set array (sing-box won't download anything)
+/// 2. Remove all route rules that reference remote rule_sets
+/// 3. Add inline fallback rules for private IPs and DNS
+///
+/// This matches exactly what the AuroraBox desktop does.
 pub fn patch_rule_set_cdn(config: &mut Value) {
-    let local_rulesets = crate::utils::rule_sets::extract_rule_sets();
+    let route = match config.get_mut("route") {
+        Some(r) => r,
+        None => return,
+    };
 
-    if let Some(route) = config.get_mut("route") {
-        // Convert route.rule_set: remote URLs → local file:// URLs
-        if let Some(rule_sets) = route.get_mut("rule_set") {
-            if let Some(arr) = rule_sets.as_array_mut() {
-                // First pass: convert known rule_sets to local, mark unknown for removal
-                let mut to_remove = Vec::new();
-                for (i, rs) in arr.iter_mut().enumerate() {
-                    // Clone tag to avoid borrow conflict
-                    let tag = rs.get("tag").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    if let Some(ref tag_str) = tag {
-                        if let Some(local_url) = local_rulesets.get(tag_str) {
-                            if let Some(obj) = rs.as_object_mut() {
-                                obj.insert("type".to_string(), Value::String("local".to_string()));
-                                obj.insert("path".to_string(), Value::String(local_url.clone()));
-                                obj.remove("url");
-                                obj.remove("format");
-                                obj.remove("download_detour");
-                                log::info!("Using local rule-set: {}", tag_str);
-                            }
-                        } else {
-                            to_remove.push(i);
-                        }
-                    }
-                }
-                // Remove entries that weren't converted (still remote)
-                for i in to_remove.into_iter().rev() {
-                    arr.remove(i);
-                }
-            }
-        }
+    // 1. Empty rule_sets — no downloads, no errors
+    if let Some(obj) = route.as_object_mut() {
+        obj.insert("rule_set".to_string(), Value::Array(vec![]));
+    }
 
-        // Collect available tags for rule filtering
-        let available_tags: Vec<String> = local_rulesets.keys().cloned().collect();
-
-        // Clean route rules: keep only those referencing available rule_sets
-        if let Some(rules) = route.get_mut("rules") {
-            if let Some(arr) = rules.as_array_mut() {
-                let mut to_remove = Vec::new();
-                for (i, rule) in arr.iter().enumerate() {
-                    let keep = match rule.get("rule_set") {
-                        Some(Value::String(tag)) => available_tags.iter().any(|t| t == tag),
-                        Some(Value::Array(tags)) => tags.iter().any(|v| {
-                            v.as_str().map(|t| available_tags.iter().any(|a| a == t)).unwrap_or(false)
-                        }),
-                        Some(_) => true, // inline rule_set with "rules" key — keep
-                        None => true,    // non-rule_set rule — keep
-                    };
-                    if !keep {
-                        to_remove.push(i);
-                    }
-                }
-                for i in to_remove.into_iter().rev() {
-                    arr.remove(i);
-                }
-            }
+    // 2. Remove rules that reference remote rule_sets
+    if let Some(rules) = route.get_mut("rules") {
+        if let Some(arr) = rules.as_array_mut() {
+            arr.retain(|rule| {
+                // Keep rules that don't reference rule_sets
+                !rule.as_object().map_or(false, |o| o.contains_key("rule_set"))
+            });
         }
     }
 
-    // Clean DNS rules referencing unavailable rule_sets
-    if let Some(dns) = config.get_mut("dns") {
-        let available: Vec<String> = local_rulesets.keys().cloned().collect();
-        if let Some(rules) = dns.get_mut("rules") {
-            if let Some(arr) = rules.as_array_mut() {
-                let mut to_remove = Vec::new();
-                for (i, rule) in arr.iter().enumerate() {
-                    if let Some(rs) = rule.get("rule_set") {
-                        let has_any = rs.as_array().map_or(false, |tags| {
-                            tags.iter().any(|v| {
-                                v.as_str().map(|t| available.iter().any(|a| a == t)).unwrap_or(false)
-                            })
-                        });
-                        if !has_any {
-                            to_remove.push(i);
-                        }
-                    }
-                }
-                for i in to_remove.into_iter().rev() {
-                    arr.remove(i);
-                }
-            }
-        }
-        // Remove empty rules array
-        if dns.get("rules").and_then(|v| v.as_array()).map_or(true, |a| a.is_empty()) {
-            if let Some(obj) = dns.as_object_mut() {
-                obj.remove("rules");
-            }
+    // 3. Add inline fallback rules (same as desktop)
+    let inline_rules: Vec<Value> = vec![
+        // DNS hijack prevention
+        serde_json::json!({"protocol": "dns", "outbound": "dns-out"}),
+        // Private IPs → direct
+        serde_json::json!({
+            "ip_is_private": true,
+            "outbound": "direct"
+        }),
+        // Common private CIDRs → direct
+        serde_json::json!({
+            "ip_cidr": [
+                "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                "127.0.0.0/8", "224.0.0.0/4", "240.0.0.0/4",
+                "100.64.0.0/10", "198.18.0.0/15", "169.254.0.0/16",
+                "fe80::/10", "fc00::/7", "ff00::/8"
+            ],
+            "outbound": "direct"
+        }),
+    ];
+
+    if let Some(rules) = route.get_mut("rules") {
+        if let Some(arr) = rules.as_array_mut() {
+            // Prepend inline rules at the beginning (they take priority)
+            let mut new_rules = inline_rules;
+            new_rules.append(arr);
+            *arr = new_rules;
         }
     }
 }
@@ -107,13 +72,11 @@ pub fn configure_mixed_inbound(
     if let Some(inbounds) = config.get_mut("inbounds") {
         if let Some(arr) = inbounds.as_array_mut() {
             for inbound in arr.iter_mut() {
-                if let Some(typ) = inbound.get("type").and_then(|v| v.as_str()) {
-                    if typ == "mixed" {
-                        inbound["listen"] = Value::String(listen.to_string());
-                        inbound["listen_port"] = Value::Number(port.into());
-                        if !inbound.as_object().map_or(false, |o| o.contains_key("tag")) {
-                            inbound["tag"] = Value::String("mixed-in".to_string());
-                        }
+                if inbound.get("type").and_then(|v| v.as_str()) == Some("mixed") {
+                    inbound["listen"] = Value::String(listen.to_string());
+                    inbound["listen_port"] = Value::Number(port.into());
+                    if !inbound.as_object().map_or(false, |o| o.contains_key("tag")) {
+                        inbound["tag"] = Value::String("mixed-in".to_string());
                     }
                 }
             }
@@ -131,11 +94,7 @@ pub fn configure_tun_inbound(
     if let Some(inbounds) = config.get_mut("inbounds") {
         if let Some(arr) = inbounds.as_array_mut() {
             for inbound in arr.iter_mut() {
-                let is_tun = inbound
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .map(|t| t == "tun")
-                    .unwrap_or(false);
+                let is_tun = inbound.get("type").and_then(|v| v.as_str()) == Some("tun");
                 if !is_tun { continue; }
                 inbound["stack"] = Value::String(stack.to_string());
                 inbound["interface_name"] = Value::String(interface_name.to_string());
@@ -164,10 +123,8 @@ pub fn update_dhcp_settings(config: &mut Value, _use_dhcp: bool, direct_dns_tag:
         if let Some(servers) = dns.get_mut("servers") {
             if let Some(arr) = servers.as_array_mut() {
                 for server in arr.iter_mut() {
-                    if let Some(tag) = server.get("tag").and_then(|v| v.as_str()) {
-                        if tag == "system" {
-                            server["tag"] = Value::String(direct_dns_tag.to_string());
-                        }
+                    if server.get("tag").and_then(|v| v.as_str()) == Some("system") {
+                        server["tag"] = Value::String(direct_dns_tag.to_string());
                     }
                 }
             }
@@ -177,29 +134,25 @@ pub fn update_dhcp_settings(config: &mut Value, _use_dhcp: bool, direct_dns_tag:
 
 /// Update experimental config (clash API, cache file)
 pub fn update_experimental_config(config: &mut Value, secret: &str, cache_path: &str) {
-    let experimental = config
-        .as_object_mut()
-        .and_then(|obj| {
-            if !obj.contains_key("experimental") {
-                obj.insert("experimental".to_string(), serde_json::json!({}));
+    if let Some(obj) = config.as_object_mut() {
+        if !obj.contains_key("experimental") {
+            obj.insert("experimental".to_string(), serde_json::json!({}));
+        }
+        if let Some(exp) = obj.get_mut("experimental") {
+            if let Some(eobj) = exp.as_object_mut() {
+                eobj.insert("clash_api".to_string(), serde_json::json!({
+                    "external_controller": "127.0.0.1:9191",
+                    "external_ui": "",
+                    "secret": secret,
+                    "default_mode": "rule"
+                }));
+                eobj.insert("cache_file".to_string(), serde_json::json!({
+                    "enabled": true,
+                    "path": cache_path,
+                    "cache_id": "aurorabox-cli",
+                    "store_fakeip": false
+                }));
             }
-            obj.get_mut("experimental")
-        });
-
-    if let Some(exp) = experimental {
-        if let Some(obj) = exp.as_object_mut() {
-            obj.insert("clash_api".to_string(), serde_json::json!({
-                "external_controller": "127.0.0.1:9191",
-                "external_ui": "",
-                "secret": secret,
-                "default_mode": "rule"
-            }));
-            obj.insert("cache_file".to_string(), serde_json::json!({
-                "enabled": true,
-                "path": cache_path,
-                "cache_id": "aurorabox-cli",
-                "store_fakeip": false
-            }));
         }
     }
 }
