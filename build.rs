@@ -42,7 +42,42 @@ fn main() {
         }
     }
 
+    // Embed local rule-set files (.srs)
+    let srs_dir = PathBuf::from("download-srs");
+    let rule_sets_data_path = PathBuf::from(&out_dir).join("rule_sets_data.rs");
+    let mut rs_code = String::from("fn get_embedded_rule_sets() -> Vec<(&'static str, &'static [u8])> {\n");
+    rs_code.push_str("    vec![\n");
+
+    if srs_dir.exists() {
+        for entry in std::fs::read_dir(&srs_dir).unwrap_or_else(|_| std::fs::read_dir(".").unwrap()) {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.extension().map_or(false, |e| e == "srs") {
+                    let name = path.file_name().unwrap().to_string_lossy().to_string();
+                    let tag = name.trim_end_matches(".srs").to_string();
+                    let data = std::fs::read(&path).unwrap_or_default();
+                    if data.len() > 500 {
+                        // Copy to OUT_DIR for include_bytes!
+                        let dest = PathBuf::from(&out_dir).join(&name);
+                        std::fs::write(&dest, &data).ok();
+                        rs_code.push_str(&format!(
+                            "        (\"{}\", include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{}\"))),\n",
+                            tag, name
+                        ));
+                        println!("cargo:warning=Embedded rule-set: {} ({:.1} KB)", name, data.len() as f64 / 1024.0);
+                    } else {
+                        println!("cargo:warning=Skipping small/corrupted rule-set: {} ({} bytes)", name, data.len());
+                    }
+                }
+            }
+        }
+    }
+
+    rs_code.push_str("    ]\n}\n");
+    std::fs::write(&rule_sets_data_path, &rs_code).ok();
+
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=download-srs");
     println!("cargo:rerun-if-env-changed=SING_BOX_VERSION");
 }
 
