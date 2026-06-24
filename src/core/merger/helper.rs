@@ -1,32 +1,45 @@
 use serde_json::Value;
 
-/// Patch rule_set entries: strip remote rule_set references (converted to inline
-/// rules during config generation). The template uses rule_set references for
-/// CDN delivery; this removes them since the CLI doesn't use CDN rule sets.
+/// Patch rule_set entries: strip remote rule_set download definitions and
+/// rule references. This prevents sing-box from trying to download rule-sets
+/// at startup (which can fail due to TLS/cert issues through the proxy).
+///
+/// For global mode, all traffic goes through proxy anyway — no split needed.
+/// For rule mode, we keep basic inline rules for captive portal detection.
 pub fn patch_rule_set_cdn(config: &mut Value) {
-    // Remove top-level "rule_set" key if it exists
-    if let Some(obj) = config.as_object_mut() {
-        obj.remove("rule_set");
-    }
-
-    // In the route section, remove any "rule_set" entries from rules
+    // Remove route.rule_set — the remote download definitions
+    // (these cause sing-box to download files at startup, which may fail)
     if let Some(route) = config.get_mut("route") {
+        if let Some(obj) = route.as_object_mut() {
+            obj.remove("rule_set");
+        }
+
+        // Strip rules that reference remote rule_set tags
+        // (these references are now dangling since we removed the downloads)
         if let Some(rules) = route.get_mut("rules") {
             if let Some(arr) = rules.as_array_mut() {
                 arr.retain(|rule| {
-                    // Keep rules that don't reference remote rule_sets
-                    if let Some(rule_set) = rule.get("rule_set") {
-                        // Check if it's an inline rule_set (has "rules" array)
-                        // or just a tag reference (remote)
-                        if let Some(rules_arr) = rule_set.get("rules") {
-                            rules_arr.is_array() && !rules_arr.as_array().unwrap().is_empty()
-                        } else {
-                            // Remote reference - remove
-                            false
-                        }
+                    if let Some(rs) = rule.get("rule_set") {
+                        // Keep only inline rule_sets (have "rules" array)
+                        rs.get("rules")
+                            .and_then(|r| r.as_array())
+                            .map(|a| !a.is_empty())
+                            .unwrap_or(false)
                     } else {
-                        true
+                        true // keep non-rule_set rules
                     }
+                });
+            }
+        }
+    }
+
+    // Also clean DNS rules that reference removed rule_sets
+    if let Some(dns) = config.get_mut("dns") {
+        if let Some(rules) = dns.get_mut("rules") {
+            if let Some(arr) = rules.as_array_mut() {
+                arr.retain(|rule| {
+                    // Remove rules that have "rule_set" key (dangling refs)
+                    !rule.as_object().map_or(false, |o| o.contains_key("rule_set"))
                 });
             }
         }
