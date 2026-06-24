@@ -60,6 +60,9 @@ pub fn generate_config(
     // Ensure auto/ExitGateway have valid outbounds (not empty → sing-box crash)
     ensure_valid_outbounds(&mut config);
 
+    // Fix DNS: use direct DNS to avoid resolution failures through proxy
+    fix_dns_for_proxy(&mut config);
+
     // Apply standard patches
     merger::helper::patch_rule_set_cdn(&mut config);
     merger::helper::configure_mixed_inbound(&mut config, 6789, false, false);
@@ -83,6 +86,24 @@ pub fn generate_config(
     }
 
     Ok(config)
+}
+
+/// Fix DNS configuration to use direct resolution instead of proxy detour.
+/// DNS through proxy can fail if the proxy server restricts DNS traffic.
+fn fix_dns_for_proxy(config: &mut Value) {
+    if let Some(dns) = config.get_mut("dns") {
+        // Change DNS final from dns_proxy to system (direct DNS)
+        let current_final = dns
+            .get("final")
+            .and_then(|v| v.as_str())
+            .unwrap_or("dns_proxy");
+        if current_final == "dns_proxy" {
+            if let Some(obj) = dns.as_object_mut() {
+                obj.insert("final".to_string(), Value::String("system".to_string()));
+                log::info!("DNS: changed final from dns_proxy to system (direct DNS)");
+            }
+        }
+    }
 }
 
 /// Ensure urltest/selector groups have at least one valid outbound.
