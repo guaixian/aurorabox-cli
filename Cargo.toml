@@ -1,6 +1,6 @@
 [package]
 name = "aurorabox-cli"
-version = "1.0.5"
+version = "1.0.6"
 edition = "2021"
 description = "AuroraBox CLI - sing-box proxy manager with optional web UI"
 
