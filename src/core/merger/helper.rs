@@ -65,9 +65,9 @@ pub fn patch_rule_set_cdn(config: &mut Value) {
 
     // Clean DNS rules referencing unavailable rule_sets
     if let Some(dns) = config.get_mut("dns") {
+        let available: Vec<String> = local_rulesets.keys().cloned().collect();
         if let Some(rules) = dns.get_mut("rules") {
             if let Some(arr) = rules.as_array_mut() {
-                let available: Vec<String> = local_rulesets.keys().cloned().collect();
                 let mut to_remove = Vec::new();
                 for (i, rule) in arr.iter().enumerate() {
                     if let Some(rs) = rule.get("rule_set") {
@@ -84,6 +84,12 @@ pub fn patch_rule_set_cdn(config: &mut Value) {
                 for i in to_remove.into_iter().rev() {
                     arr.remove(i);
                 }
+            }
+        }
+        // Remove empty rules array
+        if dns.get("rules").and_then(|v| v.as_array()).map_or(true, |a| a.is_empty()) {
+            if let Some(obj) = dns.as_object_mut() {
+                obj.remove("rules");
             }
         }
     }

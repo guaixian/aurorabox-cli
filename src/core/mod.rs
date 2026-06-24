@@ -133,6 +133,17 @@ fn ensure_valid_outbounds(config: &mut Value) {
             }
         }
     }
+
+    // Add insecure TLS skip to urltest to avoid CRYPTO_ERROR through proxy
+    for ob in outbounds.iter_mut() {
+        if ob.get("type").and_then(|v| v.as_str()) == Some("urltest") {
+            if let Some(obj) = ob.as_object_mut() {
+                if !obj.contains_key("insecure") {
+                    obj.insert("insecure".to_string(), Value::Bool(true));
+                }
+            }
+        }
+    }
 }
 
 /// Generate config and write it to the default config path
