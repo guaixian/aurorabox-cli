@@ -57,6 +57,9 @@ pub fn generate_config(
         }
     }
 
+    // Ensure auto/ExitGateway have valid outbounds (not empty → sing-box crash)
+    ensure_valid_outbounds(&mut config);
+
     // Apply standard patches
     merger::helper::patch_rule_set_cdn(&mut config);
     merger::helper::configure_mixed_inbound(&mut config, 6789, false, false);
@@ -80,6 +83,56 @@ pub fn generate_config(
     }
 
     Ok(config)
+}
+
+/// Ensure urltest/selector groups have at least one valid outbound.
+/// An empty outbounds list causes sing-box to crash with "dependency not found".
+fn ensure_valid_outbounds(config: &mut Value) {
+    let outbounds = if let Some(arr) = config.get_mut("outbounds") {
+        arr.as_array_mut().unwrap()
+    } else {
+        return;
+    };
+
+    // Collect all outbound tags
+    let all_tags: Vec<String> = outbounds
+        .iter()
+        .filter_map(|ob| ob.get("tag").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+
+    // First pass: collect types and tags (immutable borrows)
+    let mut fixes: Vec<(usize, String)> = Vec::new();
+    for (i, ob) in outbounds.iter().enumerate() {
+        let otype = ob.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if otype == "selector" || otype == "urltest" {
+            let tag = ob.get("tag").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+            fixes.push((i, tag));
+        }
+    }
+
+    // Second pass: apply fixes (mutable borrows)
+    for (idx, tag) in fixes {
+        let ob = &mut outbounds[idx];
+        if let Some(out_tags) = ob.get_mut("outbounds") {
+            if let Some(arr) = out_tags.as_array_mut() {
+                // Remove references to non-existent outbounds
+                arr.retain(|v| {
+                    if let Some(ref_str) = v.as_str() {
+                        all_tags.iter().any(|t| t == ref_str)
+                    } else {
+                        true
+                    }
+                });
+
+                // If still empty, add "direct" as fallback
+                if arr.is_empty() {
+                    arr.push(Value::String("direct".to_string()));
+                    let otype = ob.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                    log::warn!("Outbound '{}' ({}) had no valid outbounds, added 'direct' fallback", tag, otype);
+                }
+            }
+        }
+    }
 }
 
 /// Generate config and write it to the default config path

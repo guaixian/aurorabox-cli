@@ -19,18 +19,14 @@ pub fn merge_manual_servers(config: &mut Value, servers: &[ProxyServer]) -> anyh
 
     // Build outbounds for each server
     for server in servers {
-        let outbound = outbound::build_outbound(server)?;
-        let tag = format!("manual-{}", server.identifier);
+        let mut ob = outbound::build_outbound(server)?;
 
-        let mut ob = outbound;
-        if let Some(obj) = ob.as_object_mut() {
-            // Ensure the tag is set
-            if !obj.contains_key("tag") {
-                obj.insert("tag".to_string(), Value::String(tag.clone()));
-            } else {
-                // Use existing tag
-            }
-        }
+        // Use the tag from build_outbound (e.g., "ss-abc12345", "socks5-def67890")
+        let tag = ob
+            .get("tag")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("manual-{}", server.identifier));
 
         outbounds.push(ob);
 

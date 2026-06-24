@@ -59,6 +59,11 @@ fn main() -> anyhow::Result<()> {
                 )?;
                 log::info!("Config written to: {}", config_path);
 
+                // Transition to Starting state
+                proxy::manager::transition(proxy::manager::Intent::Start {
+                    mode: mode.to_mode_str().to_string(),
+                })?;
+
                 // Start sing-box
                 log::info!("Starting sing-box...");
                 proxy::process::start_singbox(&config_path, proxy_mode)?;
