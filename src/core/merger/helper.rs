@@ -12,11 +12,26 @@ pub fn patch_rule_set_cdn(config: &mut Value) {
     // 0. Strip DNS rules that reference rule_sets — do this first
     //    since dns and route borrows can't coexist.
     if let Some(dns) = config.get_mut("dns") {
+        // DNS top-level rules
         if let Some(rules) = dns.get_mut("rules") {
             if let Some(arr) = rules.as_array_mut() {
                 arr.retain(|rule| {
                     !rule.as_object().map_or(false, |o| o.contains_key("rule_set"))
                 });
+            }
+        }
+        // DNS server-level rules
+        if let Some(servers) = dns.get_mut("servers") {
+            if let Some(arr) = servers.as_array_mut() {
+                for server in arr.iter_mut() {
+                    if let Some(srv_rules) = server.get_mut("rules") {
+                        if let Some(rule_arr) = srv_rules.as_array_mut() {
+                            rule_arr.retain(|r| {
+                                !r.as_object().map_or(false, |o| o.contains_key("rule_set"))
+                            });
+                        }
+                    }
+                }
             }
         }
     }
