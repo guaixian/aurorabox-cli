@@ -9,6 +9,18 @@ use serde_json::Value;
 ///
 /// This matches exactly what the AuroraBox desktop does.
 pub fn patch_rule_set_cdn(config: &mut Value) {
+    // 0. Strip DNS rules that reference rule_sets — do this first
+    //    since dns and route borrows can't coexist.
+    if let Some(dns) = config.get_mut("dns") {
+        if let Some(rules) = dns.get_mut("rules") {
+            if let Some(arr) = rules.as_array_mut() {
+                arr.retain(|rule| {
+                    !rule.as_object().map_or(false, |o| o.contains_key("rule_set"))
+                });
+            }
+        }
+    }
+
     let route = match config.get_mut("route") {
         Some(r) => r,
         None => return,
