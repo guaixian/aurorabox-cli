@@ -8,8 +8,8 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let dest = PathBuf::from(&out_dir).join("sing-box");
 
-    // Only download if the binary doesn't exist yet
-    if dest.exists() {
+    // Only download if the binary doesn't exist or is empty (previous failure)
+    if dest.exists() && dest.metadata().map(|m| m.len() > 1024).unwrap_or(false) {
         println!("cargo:warning=sing-box already downloaded for {target}");
         return;
     }
@@ -35,9 +35,8 @@ fn main() {
             println!("cargo:warning=sing-box embedded successfully ({})", dest.display());
         }
         Err(e) => {
-            // Graceful fallback: create an empty file; runtime will use PATH
             println!("cargo:warning=Failed to download sing-box: {e}");
-            println!("cargo:warning=sing-box will NOT be embedded — runtime will use PATH");
+            println!("cargo:warning=sing-box will NOT be embedded — run `aurorabox install` at runtime");
             std::fs::write(&dest, []).ok();
         }
     }

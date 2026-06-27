@@ -25,6 +25,13 @@ pub fn sing_box_path() -> String {
         }
     }
 
+    // Check cached path (from `aurorabox install`)
+    let cached = cached_singbox_path();
+    if cached.exists() {
+        log::debug!("Using cached sing-box: {}", cached.display());
+        return cached.to_string_lossy().to_string();
+    }
+
     // Check environment variable
     if let Ok(path) = std::env::var("SING_BOX_PATH") {
         if std::path::Path::new(&path).exists() {
@@ -112,12 +119,65 @@ pub fn get_singbox_version() -> anyhow::Result<String> {
     }
 }
 
-/// No-op: sing-box is now bundled. Kept for backward compat.
-pub fn download_singbox(_version: &str, _target_dir: &str) -> anyhow::Result<()> {
-    log::info!("sing-box is bundled into the binary — no download needed");
-    let cached = cached_singbox_path();
-    if !cached.exists() && EMBEDDED_SING_BOX.len() > 1024 {
-        extract_embedded(&cached)?;
+/// Download sing-box from GitHub releases (fallback when not embedded at build time).
+pub fn download_singbox(version: &str, target_dir: &str) -> anyhow::Result<()> {
+    // Already embedded — just extract from binary
+    if EMBEDDED_SING_BOX.len() > 1024 {
+        let cached = cached_singbox_path();
+        if !cached.exists() {
+            extract_embedded(&cached)?;
+        }
+        log::info!("sing-box is bundled — no download needed");
+        return Ok(());
     }
-    Ok(())
+
+    // Not embedded — shell out to curl+tar (available everywhere, zero new deps)
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let platform = "linux-amd64";
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    let platform = "linux-arm64";
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    let platform = "darwin-amd64";
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let platform = "darwin-arm64";
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+    )))]
+    let platform = "linux-amd64";
+
+    let url = format!(
+        "https://github.com/SagerNet/sing-box/releases/download/v{version}/sing-box-{version}-{platform}.tar.gz"
+    );
+
+    std::fs::create_dir_all(target_dir)?;
+    log::info!("Downloading sing-box v{version}...");
+
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "curl -fL '{}' -o /tmp/sing-box.tar.gz && \
+             tar xzf /tmp/sing-box.tar.gz -C '{}' && \
+             mv '{}/'*/sing-box '{}/sing-box' 2>/dev/null; \
+             chmod +x '{}/sing-box' 2>/dev/null; \
+             rm -f /tmp/sing-box.tar.gz; \
+             rm -rf '{}/'sing-box-*",
+            url, target_dir, target_dir, target_dir, target_dir, target_dir
+        ))
+        .status()
+        .map_err(|e| anyhow::anyhow!("curl|tar failed: {e}"))?;
+
+    if !status.success() {
+        anyhow::bail!("Failed to download/extract sing-box");
+    }
+
+    let dest = std::path::Path::new(target_dir).join("sing-box");
+    if dest.exists() {
+        log::info!("sing-box v{version} installed to {}", dest.display());
+        Ok(())
+    } else {
+        anyhow::bail!("sing-box binary not found after extraction");
+    }
 }
