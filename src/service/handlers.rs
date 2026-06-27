@@ -133,20 +133,7 @@ pub async fn post_start(
             })?
     };
 
-    // Start sing-box
-    let proxy_mode = match mode.as_str() {
-        "tun" => crate::proxy::ProxyMode::Tun,
-        _ => crate::proxy::ProxyMode::System,
-    };
-
-    crate::proxy::process::start_singbox(&config_path, proxy_mode).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse { error: e.to_string() }),
-        )
-    })?;
-
-    // Transition state
+    // Transition state first (before launching sing-box)
     crate::proxy::manager::transition(crate::proxy::manager::Intent::Start {
         mode: mode.clone(),
     })
@@ -156,6 +143,22 @@ pub async fn post_start(
             Json(ErrorResponse { error: e.to_string() }),
         )
     })?;
+
+    // Start sing-box
+    let proxy_mode = match mode.as_str() {
+        "tun" => crate::proxy::ProxyMode::Tun,
+        _ => crate::proxy::ProxyMode::System,
+    };
+
+    if let Err(e) = crate::proxy::process::start_singbox(&config_path, proxy_mode) {
+        let _ = crate::proxy::manager::transition(crate::proxy::manager::Intent::Fail {
+            reason: e.to_string(),
+        });
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: e.to_string() }),
+        ));
+    }
 
     // Wait briefly for readiness
     if crate::proxy::readiness::wait_ready(std::time::Duration::from_secs(10)).await {
@@ -592,17 +595,21 @@ pub async fn get_config_file(
 ) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
     let path = q.path.unwrap_or_default();
     let config_dir = crate::core::config_dir();
+    // Prevent directory traversal
+    let canonical_base = std::fs::canonicalize(&config_dir).unwrap_or_else(|_| std::path::PathBuf::from(&config_dir));
     let full_path = std::path::Path::new(&config_dir).join(path.trim_start_matches('/'));
-    if full_path.exists() {
-        std::fs::read_to_string(&full_path).map_err(|e| (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse { error: e.to_string() }),
-        ))
-    } else {
-        Err((
+    let resolved = std::fs::canonicalize(&full_path);
+    match resolved {
+        Ok(p) if p.starts_with(&canonical_base) && p.exists() => {
+            std::fs::read_to_string(&p).map_err(|e| (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse { error: e.to_string() }),
+            ))
+        }
+        _ => Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse { error: "File not found".to_string() }),
-        ))
+        )),
     }
 }
 

@@ -20,8 +20,8 @@ pub fn merge_subscription_outbounds(
     }
 
     // Get or create the outbounds array in the config
-    let outbounds = if let Some(arr) = config.get_mut("outbounds") {
-        arr.as_array_mut().unwrap()
+    let outbounds = if let Some(arr) = config.get_mut("outbounds").and_then(|v| v.as_array_mut()) {
+        arr
     } else {
         if let Some(obj) = config.as_object_mut() {
             obj.insert("outbounds".to_string(), Value::Array(Vec::new()));

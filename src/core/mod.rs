@@ -94,8 +94,8 @@ pub fn generate_config(
 /// Ensure urltest/selector groups have at least one valid outbound.
 /// An empty outbounds list causes sing-box to crash with "dependency not found".
 fn ensure_valid_outbounds(config: &mut Value) {
-    let outbounds = if let Some(arr) = config.get_mut("outbounds") {
-        arr.as_array_mut().unwrap()
+    let outbounds = if let Some(arr) = config.get_mut("outbounds").and_then(|v| v.as_array_mut()) {
+        arr
     } else {
         return;
     };

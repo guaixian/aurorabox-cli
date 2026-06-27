@@ -19,7 +19,7 @@ pub fn merge_manual_servers(config: &mut Value, servers: &[ProxyServer]) -> anyh
 
     // Build outbounds for each server
     for server in servers {
-        let mut ob = outbound::build_outbound(server)?;
+        let ob = outbound::build_outbound(server)?;
 
         // Use the tag from build_outbound (e.g., "ss-abc12345", "socks5-def67890")
         let tag = ob
@@ -65,6 +65,12 @@ pub fn merge_manual_servers(config: &mut Value, servers: &[ProxyServer]) -> anyh
 /// Get or create the outbounds array in config
 fn get_or_create_outbounds_array(config: &mut Value) -> &mut Vec<Value> {
     if !config.as_object().map_or(false, |o| o.contains_key("outbounds")) {
+        if let Some(obj) = config.as_object_mut() {
+            obj.insert("outbounds".to_string(), Value::Array(Vec::new()));
+        }
+    }
+    // as_array_mut can fail if key exists but is not an array — replace it
+    if config["outbounds"].as_array_mut().is_none() {
         if let Some(obj) = config.as_object_mut() {
             obj.insert("outbounds".to_string(), Value::Array(Vec::new()));
         }

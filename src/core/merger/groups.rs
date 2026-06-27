@@ -64,6 +64,12 @@ fn get_or_create_outbounds_array(config: &mut Value) -> &mut Vec<Value> {
             obj.insert("outbounds".to_string(), Value::Array(Vec::new()));
         }
     }
+    // as_array_mut can fail if key exists but is not an array — replace it
+    if config["outbounds"].as_array_mut().is_none() {
+        if let Some(obj) = config.as_object_mut() {
+            obj.insert("outbounds".to_string(), Value::Array(Vec::new()));
+        }
+    }
     config["outbounds"].as_array_mut().unwrap()
 }
 

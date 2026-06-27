@@ -211,9 +211,9 @@ pub fn parse_ss_link(link: &str) -> Option<ParsedProxy> {
     }
 
     // SIP002: userinfo@host:port
-    let at_idx = raw.rfind('@')?;
-    let userinfo_raw = &raw[..at_idx];
-    let host_raw = &raw[at_idx + 1..];
+    let at_idx = pre_fragment.rfind('@')?;
+    let userinfo_raw = &pre_fragment[..at_idx];
+    let host_raw = &pre_fragment[at_idx + 1..];
 
     let (host_part, name_from_host) = split_fragment(host_raw);
     let name = if name_from_host.is_empty() {
