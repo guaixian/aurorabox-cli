@@ -38,17 +38,16 @@ fn main() -> anyhow::Result<()> {
             config_dir,
             web_server,
             port,
+            daemon,
         } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
                 let proxy_mode = proxy::ProxyMode::from(mode.clone());
 
-                // Activate specified proxies/groups before generating config
                 if !proxy_ids.is_empty() {
                     set_active_proxies(&proxy_ids)?;
                 }
 
-                // Generate config
                 log::info!("Generating config for mode: {:?}", mode);
                 let tun = mode.is_tun();
                 let config_path = core::generate_and_write_config(
@@ -59,20 +58,42 @@ fn main() -> anyhow::Result<()> {
                 )?;
                 log::info!("Config written to: {}", config_path);
 
-                // Transition to Starting state
                 proxy::manager::transition(proxy::manager::Intent::Start {
                     mode: mode.to_mode_str().to_string(),
                 })?;
 
-                // Start sing-box
                 log::info!("Starting sing-box...");
                 proxy::process::start_singbox(&config_path, proxy_mode)?;
 
-                // Wait for readiness
                 log::info!("Waiting for engine to be ready...");
                 if proxy::readiness::wait_ready(std::time::Duration::from_secs(20)).await {
                     proxy::manager::transition(proxy::manager::Intent::MarkRunning)?;
                     log::info!("Engine is running!");
+
+                    // Save state for restart
+                    save_start_state(&mode, &subscription, &proxy_ids);
+
+                    if daemon {
+                        #[cfg(unix)]
+                        {
+                            let pid = unsafe { libc::fork() };
+                            if pid < 0 {
+                                anyhow::bail!("fork failed");
+                            }
+                            if pid > 0 {
+                                // Parent: exit immediately
+                                let child_pid = proxy::process::get_pid().unwrap_or(0);
+                                println!("Daemon started (sing-box PID: {})", child_pid);
+                                std::process::exit(0);
+                            }
+                            // Child: continue monitoring
+                            log::info!("Daemonized (PID: {})", std::process::id());
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            log::warn!("--daemon not supported on this platform, running in foreground");
+                        }
+                    }
 
                     if web_server {
                         #[cfg(feature = "web-server")]
@@ -86,7 +107,6 @@ fn main() -> anyhow::Result<()> {
                             log::error!("Web server feature not enabled");
                         }
                     } else {
-                        // Block and wait for sing-box to exit
                         proxy::monitor::wait_for_exit().await;
                     }
                 } else {
@@ -104,6 +124,39 @@ fn main() -> anyhow::Result<()> {
             proxy::process::stop_singbox()?;
             proxy::manager::transition(proxy::manager::Intent::MarkIdle)?;
             log::info!("Engine stopped");
+        }
+
+        Commands::Restart => {
+            if let Some(state) = load_start_state() {
+                log::info!("Restarting with mode={:?} proxy={:?}", state.mode, state.proxy_ids);
+                // Stop first
+                let _ = proxy::process::stop_singbox();
+                let _ = proxy::manager::transition(proxy::manager::Intent::MarkIdle);
+                std::thread::sleep(std::time::Duration::from_millis(500));
+
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(async {
+                    let proxy_mode = proxy::ProxyMode::from(state.mode.clone());
+                    if !state.proxy_ids.is_empty() {
+                        let ids: Vec<String> = state.proxy_ids.iter().map(|s| s.clone()).collect();
+                        set_active_proxies(&ids)?;
+                    }
+                    let tun = state.mode.is_tun();
+                    let mode_str = state.mode.to_mode_str().to_string();
+                    let config_path = core::generate_and_write_config(&mode_str, tun, None, None)?;
+                    proxy::manager::transition(proxy::manager::Intent::Start { mode: mode_str })?;
+                    proxy::process::start_singbox(&config_path, proxy_mode)?;
+                    if proxy::readiness::wait_ready(std::time::Duration::from_secs(20)).await {
+                        proxy::manager::transition(proxy::manager::Intent::MarkRunning)?;
+                        log::info!("Engine restarted");
+                    } else {
+                        log::error!("Engine failed to become ready");
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })?;
+            } else {
+                log::error!("No previous state found. Use `start` first.");
+            }
         }
 
         Commands::Reload => {
@@ -368,4 +421,35 @@ fn handle_remove(target: cli::RemoveTarget) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+// ── daemon state persist for restart ──
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+struct StartState {
+    mode: cli::ProxyModeArg,
+    subscription: Option<String>,
+    proxy_ids: Vec<String>,
+}
+
+fn state_path() -> String {
+    format!("{}/start-state.json", core::config_dir())
+}
+
+fn save_start_state(mode: &cli::ProxyModeArg, subscription: &Option<String>, proxy_ids: &[String]) {
+    let state = StartState {
+        mode: mode.clone(),
+        subscription: subscription.clone(),
+        proxy_ids: proxy_ids.to_vec(),
+    };
+    if let Ok(json) = serde_json::to_string(&state) {
+        let _ = std::fs::write(state_path(), json);
+    }
+}
+
+fn load_start_state() -> Option<StartState> {
+    let json = std::fs::read_to_string(state_path()).ok()?;
+    serde_json::from_str(&json).ok()
 }

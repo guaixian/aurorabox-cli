@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
 
 /// AuroraBox CLI - sing-box proxy manager
 #[derive(Parser, Debug)]
@@ -31,8 +32,8 @@ pub enum Commands {
 
     /// Start the sing-box proxy engine
     ///
-    /// Generates config and launches sing-box. The CLI will block and
-    /// monitor the sing-box process until it exits or receives SIGTERM.
+    /// Generates config and launches sing-box. With --daemon, forks to
+    /// background after engine is ready; without, blocks in foreground.
     Start {
         /// Proxy mode: rule, global, or tun
         #[arg(long, default_value = "rule")]
@@ -43,9 +44,6 @@ pub enum Commands {
         subscription: Option<String>,
 
         /// Proxy server or group identifier to activate before starting.
-        /// Can be specified multiple times. If a group is active, its
-        /// members are used. If a server is active, it becomes the
-        /// default outbound.
         #[arg(long = "proxy", short = 'p')]
         proxy_ids: Vec<String>,
 
@@ -60,10 +58,17 @@ pub enum Commands {
         /// Web server port (only with --web-server)
         #[arg(long, default_value = "8080")]
         port: u16,
+
+        /// Fork to background after engine is ready
+        #[arg(long, short = 'd')]
+        daemon: bool,
     },
 
     /// Stop the running sing-box process
     Stop,
+
+    /// Restart with the last-used mode and proxy
+    Restart,
 
     /// Reload sing-box configuration (sends SIGHUP)
     Reload,
@@ -131,7 +136,7 @@ pub enum Commands {
     },
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, Serialize, Deserialize)]
 pub enum ProxyModeArg {
     /// Rule-based routing (split traffic by rules)
     Rule,
