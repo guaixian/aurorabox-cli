@@ -60,9 +60,6 @@ pub fn generate_config(
     // Ensure auto/ExitGateway have valid outbounds
     ensure_valid_outbounds(&mut config);
 
-    // Use HTTP for urltest (avoids TLS errors through hysteria2)
-    fix_urltest_url(&mut config);
-
     // Use direct DNS to avoid resolution failures through proxy
     fix_dns_direct(&mut config);
 
@@ -153,26 +150,6 @@ fn fix_dns_direct(config: &mut Value) {
             if obj.get("final").and_then(|v| v.as_str()) == Some("dns_proxy") {
                 obj.insert("final".to_string(), Value::String("system".to_string()));
                 log::info!("DNS: using direct resolution (system) instead of proxy");
-            }
-        }
-    }
-}
-
-fn fix_urltest_url(config: &mut Value) {
-    if let Some(outbounds) = config.get_mut("outbounds") {
-        if let Some(arr) = outbounds.as_array_mut() {
-            for ob in arr.iter_mut() {
-                if ob.get("tag").and_then(|v| v.as_str()) == Some("auto")
-                    && ob.get("type").and_then(|v| v.as_str()) == Some("urltest")
-                {
-                    // Switch to HTTP to avoid TLS cert issues through proxy
-                    if let Some(obj) = ob.as_object_mut() {
-                        obj.insert("url".to_string(), Value::String(
-                            "http://www.gstatic.com/generate_204".to_string()
-                        ));
-                        log::info!("urltest: switched to HTTP URL to avoid TLS errors");
-                    }
-                }
             }
         }
     }

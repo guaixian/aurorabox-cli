@@ -12,6 +12,7 @@ pub fn build_outbound(server: &ProxyServer) -> anyhow::Result<Value> {
         "tag": tag,
         "server": server.server_address,
         "server_port": server.server_port,
+        "domain_resolver": "system",
     });
 
     match ptype {
