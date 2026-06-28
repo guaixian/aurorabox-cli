@@ -138,12 +138,12 @@ fn main() -> anyhow::Result<()> {
                 rt.block_on(async {
                     let proxy_mode = proxy::ProxyMode::from(state.mode.clone());
                     if !state.proxy_ids.is_empty() {
-                        let ids: Vec<String> = state.proxy_ids.iter().map(|s| s.clone()).collect();
-                        set_active_proxies(&ids)?;
+                        set_active_proxies(&state.proxy_ids)?;
                     }
                     let tun = state.mode.is_tun();
                     let mode_str = state.mode.to_mode_str().to_string();
-                    let config_path = core::generate_and_write_config(&mode_str, tun, None, None)?;
+                    let sub = state.subscription.as_deref();
+                    let config_path = core::generate_and_write_config(&mode_str, tun, sub, None)?;
                     proxy::manager::transition(proxy::manager::Intent::Start { mode: mode_str })?;
                     proxy::process::start_singbox(&config_path, proxy_mode)?;
                     if proxy::readiness::wait_ready(std::time::Duration::from_secs(20)).await {
